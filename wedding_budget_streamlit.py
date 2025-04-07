@@ -2,27 +2,34 @@ import os
 from datetime import datetime
 import pandas as pd
 import streamlit as st
-from openpyxl import Workbook
+from io import BytesIO
 
-# Excel 파일 경로
+# 파일명 (로컬 저장 불가, 대신 다운로드)
 filename = 'wedding_budget.xlsx'
 
-# 파일 없으면 초기화
-def initialize_excel():
-    if not os.path.exists(filename):
-        wb = Workbook()
-        ws = wb.active
-        ws.append([
-            "날짜", "품목명", "총금액", "계약금", "1차결제", "2차결제",
-            "계약취소", "계약금환불", "실지출", "잔금"
-        ])
-        wb.save(filename)
+# 기본 열 구조
+columns = [
+    "날짜", "품목명", "총금액", "계약금", "1차결제", "2차결제",
+    "계약취소", "계약금환불", "실지출", "잔금"
+]
 
-# 데이터 불러오기
+# 초기 데이터 불러오기
+@st.cache_data
 def load_data():
-    if not os.path.exists(filename):
-        initialize_excel()
-    return pd.read_excel(filename)
+    if os.path.exists(filename):
+        df = pd.read_excel(filename)
+    else:
+        df = pd.DataFrame(columns=columns)
+    return df
+
+# 실지출/잔금 계산
+def calculate_amounts(total_price, deposit, payment1, payment2, canceled, refunded):
+    if canceled:
+        actual_spend = payment1 + payment2 if refunded else deposit + payment1 + payment2
+    else:
+        actual_spend = deposit + payment1 + payment2
+    balance = total_price - (deposit + payment1 + payment2)
+    return actual_spend, balance
 
 # 저장 또는 업데이트
 def save_or_update_item(row_data):
@@ -41,20 +48,18 @@ def delete_item(item_name):
     df = df[df["품목명"] != item_name]
     df.to_excel(filename, index=False)
 
-# 계산 함수
-def calculate_amounts(total_price, deposit, payment1, payment2, canceled, refunded):
-    if canceled:
-        actual_spend = payment1 + payment2 if refunded else deposit + payment1 + payment2
-    else:
-        actual_spend = deposit + payment1 + payment2
-    balance = total_price - (deposit + payment1 + payment2)
-    return actual_spend, balance
+# 다운로드용 엑셀 생성
+def to_excel_download(df):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='예산')
+    return output.getvalue()
 
 # Streamlit UI 시작
 st.set_page_config(page_title="결혼 예산 관리기", layout="centered")
 st.title("💒 결혼 예산 관리기")
 
-initialize_excel()
+# 데이터 불러오기
 data = load_data()
 item_names = data["품목명"].tolist()
 
@@ -134,7 +139,18 @@ elif mode == "❌ 품목 삭제":
     else:
         st.info("삭제할 품목이 없습니다.")
 
-# 총 실지출
+# 총 실지출 표시
 data = load_data()
 total = data["실지출"].sum()
 st.metric(label="📦 총 누적 실지출", value=f"{total:,} 원")
+
+# 엑셀 다운로드
+st.subheader("📥 전체 예산 내역 다운로드")
+excel_file = to_excel_download(data)
+st.download_button(
+    label="💾 엑셀로 다운로드",
+    data=excel_file,
+    file_name="wedding_budget.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
