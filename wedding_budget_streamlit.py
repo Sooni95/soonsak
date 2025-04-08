@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 from io import BytesIO
 
-# 파일명 (로컬 저장 불가, 대신 다운로드)
+# 엑셀 파일 이름
 filename = 'wedding_budget.xlsx'
 
 # 기본 열 구조
@@ -12,15 +12,6 @@ columns = [
     "날짜", "품목명", "총금액", "계약금", "1차결제", "2차결제",
     "계약취소", "계약금환불", "실지출", "잔금"
 ]
-
-# 초기 데이터 불러오기
-@st.cache_data
-def load_data():
-    if os.path.exists(filename):
-        df = pd.read_excel(filename)
-    else:
-        df = pd.DataFrame(columns=columns)
-    return df
 
 # 실지출/잔금 계산
 def calculate_amounts(total_price, deposit, payment1, payment2, canceled, refunded):
@@ -32,8 +23,7 @@ def calculate_amounts(total_price, deposit, payment1, payment2, canceled, refund
     return actual_spend, balance
 
 # 저장 또는 업데이트
-def save_or_update_item(row_data):
-    df = load_data()
+def save_or_update_item(df, row_data):
     item_name = row_data["품목명"]
     if item_name in df["품목명"].values:
         for key in row_data:
@@ -41,12 +31,13 @@ def save_or_update_item(row_data):
     else:
         df = pd.concat([df, pd.DataFrame([row_data])], ignore_index=True)
     df.to_excel(filename, index=False)
+    return df
 
-# 품목 삭제
-def delete_item(item_name):
-    df = load_data()
+# 삭제
+def delete_item(df, item_name):
     df = df[df["품목명"] != item_name]
     df.to_excel(filename, index=False)
+    return df
 
 # 다운로드용 엑셀 생성
 def to_excel_download(df):
@@ -55,13 +46,22 @@ def to_excel_download(df):
         df.to_excel(writer, index=False, sheet_name='예산')
     return output.getvalue()
 
-# Streamlit UI 시작
+# Streamlit UI
 st.set_page_config(page_title="결혼 예산 관리기", layout="centered")
 st.title("💒 결혼 예산 관리기")
 
-# 데이터 불러오기
-data = load_data()
-item_names = data["품목명"].tolist()
+# 업로드 또는 기본 데이터 로드
+uploaded_file = st.file_uploader("📤 엑셀 파일 업로드 (선택)", type=["xlsx"])
+if uploaded_file:
+    df = pd.read_excel(uploaded_file)
+    st.success("✅ 업로드된 엑셀 파일이 로드되었습니다.")
+else:
+    if os.path.exists(filename):
+        df = pd.read_excel(filename)
+    else:
+        df = pd.DataFrame(columns=columns)
+
+item_names = df["품목명"].tolist()
 
 mode = st.radio("모드 선택", ["🆕 신규 품목 등록", "♻ 기존 품목 업데이트", "❌ 품목 삭제"])
 
@@ -89,29 +89,30 @@ if mode == "🆕 신규 품목 등록":
                     "실지출": actual_spend,
                     "잔금": balance
                 }
-                save_or_update_item(row)
+                df = save_or_update_item(df, row)
                 st.success(f"'{item}' 항목이 등록되었습니다!")
 
-# 기존 수정
+# 기존 항목 수정
 elif mode == "♻ 기존 품목 업데이트":
     if item_names:
         selected_item = st.selectbox("✏ 수정할 품목 선택", item_names)
-        selected_row = data[data["품목명"] == selected_item].iloc[0]
+        selected_row = df[df["품목명"] == selected_item].iloc[0]
         with st.form("update_item_form"):
             payment1 = st.number_input("💳 1차 결제", value=int(selected_row["1차결제"]), min_value=0, step=10000)
             payment2 = st.number_input("💳 2차 결제", value=int(selected_row["2차결제"]), min_value=0, step=10000)
             canceled = st.checkbox("❌ 계약 취소", value=(selected_row["계약취소"] == "O"))
             refunded = st.checkbox("💸 계약금 환불 받음", value=(selected_row["계약금환불"] == "O"))
+            actual_spend, balance = calculate_amounts(
+                selected_row["총금액"],
+                selected_row["계약금"],
+                payment1,
+                payment2,
+                canceled,
+                refunded
+            )
+            st.info(f"💰 현재 잔금: {balance:,} 원")
             submitted = st.form_submit_button("✅ 업데이트")
             if submitted:
-                actual_spend, balance = calculate_amounts(
-                    selected_row["총금액"],
-                    selected_row["계약금"],
-                    payment1,
-                    payment2,
-                    canceled,
-                    refunded
-                )
                 updated_row = {
                     "날짜": datetime.now().strftime("%Y-%m-%d"),
                     "품목명": selected_item,
@@ -124,7 +125,7 @@ elif mode == "♻ 기존 품목 업데이트":
                     "실지출": actual_spend,
                     "잔금": balance
                 }
-                save_or_update_item(updated_row)
+                df = save_or_update_item(df, updated_row)
                 st.success(f"'{selected_item}' 항목이 업데이트되었습니다!")
     else:
         st.info("등록된 품목이 없습니다.")
@@ -134,19 +135,21 @@ elif mode == "❌ 품목 삭제":
     if item_names:
         selected_item = st.selectbox("🗑 삭제할 품목 선택", item_names)
         if st.button("❌ 삭제하기"):
-            delete_item(selected_item)
+            df = delete_item(df, selected_item)
             st.success(f"'{selected_item}' 항목이 삭제되었습니다!")
     else:
         st.info("삭제할 품목이 없습니다.")
 
-# 총 실지출 표시
-data = load_data()
-total = data["실지출"].sum()
-st.metric(label="📦 총 누적 실지출", value=f"{total:,} 원")
+# 총계 요약
+total_spend = df["실지출"].sum()
+total_balance = df["잔금"].sum()
+col1, col2 = st.columns(2)
+col1.metric(label="📦 총 누적 실지출", value=f"{total_spend:,} 원")
+col2.metric(label="💸 총 잔금", value=f"{total_balance:,} 원")
 
 # 엑셀 다운로드
 st.subheader("📥 전체 예산 내역 다운로드")
-excel_file = to_excel_download(data)
+excel_file = to_excel_download(df)
 st.download_button(
     label="💾 엑셀로 다운로드",
     data=excel_file,
